@@ -6,13 +6,17 @@ import "os"
 import "net/rpc"
 import "net/http"
 
-
 type Master struct {
 	// Your definitions here.
-
+	files    []string
+	mapIndex int
 }
 
 // Your code here -- RPC handlers for the worker to call.
+func (m *Master) Request(args *RequestArgs, reply *RequestReply) error {
+	reply.FileName = m.files[m.mapIndex]
+	return nil
+}
 
 //
 // an example RPC handler.
@@ -23,7 +27,6 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
 }
-
 
 //
 // start a thread that listens for RPCs from worker.go
@@ -50,7 +53,6 @@ func (m *Master) Done() bool {
 
 	// Your code here.
 
-
 	return ret
 }
 
@@ -63,8 +65,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
 	// Your code here.
-
-
+	m.files = files
 	m.server()
 	return &m
 }
