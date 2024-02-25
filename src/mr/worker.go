@@ -4,6 +4,12 @@ import "fmt"
 import "log"
 import "net/rpc"
 import "hash/fnv"
+import "os"
+import "io/ioutil"
+import "sort"
+import "encoding/json"
+import "strings"
+import "strconv"
 
 //
 // Map functions return a slice of KeyValue.
@@ -12,6 +18,16 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+type Status struct {
+	MapIndex int
+	FileName string
+	NReduce  int
+}
+type ByKey []KeyValue
+
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -32,8 +48,8 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the master.
-	CallExample()
-	CallRequest()
+	//CallExample()
+	CallRequest(mapf)
 }
 
 //
@@ -59,12 +75,52 @@ func CallExample() {
 	fmt.Printf("reply.Y %v\n", reply.Y)
 }
 
-func CallRequest() {
+func CallRequest(mapf func(string, string) []KeyValue) {
 	args := RequestArgs{}
 	reply := RequestReply{}
+	s := Status{}
 	call("Master.Request", &args, &reply)
 
-	fmt.Printf("RequestReply.FileName %v\n", reply.FileName)
+	s.FileName = reply.FileName
+	s.MapIndex = reply.MapIndex
+	s.NReduce = reply.NReduce
+	fmt.Printf("RequestReply.FileName %v, Index %v, NReduce %v\n", s.FileName, s.MapIndex, s.NReduce)
+	MapFunction(s, mapf)
+}
+
+func MapFunction(s Status, mapf func(string, string) []KeyValue) {
+	intermediate := make([][]KeyValue, s.NReduce)
+	file, err := os.Open(s.FileName)
+	if err != nil {
+		log.Fatalf("MapWorkerIndex %v cannot open %v\n", s.MapIndex, s.FileName)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("MapWorkerIndex %v cannot read %v\n", s.MapIndex, file)
+	}
+	file.Close()
+	kva := mapf(s.FileName, string(content))
+	for _, kv := range kva {
+		intermediate[ihash(kv.Key)%s.NReduce] = append(intermediate[ihash(kv.Key)%s.NReduce], kv)
+	}
+	for i := 0; i < s.NReduce; i++ {
+		sort.Sort(ByKey(intermediate[i]))
+		var sb strings.Builder
+		sb.WriteString("mr-")
+		sb.WriteString(strconv.Itoa(s.MapIndex))
+		sb.WriteString("-")
+		sb.WriteString(strconv.Itoa(i))
+		oname := sb.String()
+		fmt.Println("test oname = ", oname)
+		ofile, _ := os.Create(oname)
+		enc := json.NewEncoder(ofile)
+		for _, kv := range intermediate[i] {
+			err := enc.Encode(&kv)
+			if err != nil {
+				log.Fatalf("Encoding to intermediate file went wrong with %v %v", kv.Key, kv.Value)
+			}
+		}
+	}
 }
 
 //

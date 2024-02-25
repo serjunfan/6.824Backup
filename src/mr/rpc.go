@@ -28,6 +28,8 @@ type RequestArgs struct {
 
 type RequestReply struct {
 	FileName string
+	MapIndex int
+	NReduce  int
 }
 
 // Cook up a unique-ish UNIX-domain socket name

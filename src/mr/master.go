@@ -5,16 +5,26 @@ import "net"
 import "os"
 import "net/rpc"
 import "net/http"
+import "sync"
 
 type Master struct {
 	// Your definitions here.
-	files    []string
-	mapIndex int
+	Files     []string
+	MapStatus []int
+	MapIndex  int
+	NReduce   int
+	Lock      sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
 func (m *Master) Request(args *RequestArgs, reply *RequestReply) error {
-	reply.FileName = m.files[m.mapIndex]
+	m.Lock.Lock()
+	reply.FileName = m.Files[m.MapIndex]
+	reply.NReduce = m.NReduce
+	reply.MapIndex = m.MapIndex
+	m.MapStatus[m.MapIndex] = 1
+	m.MapIndex++
+	m.Lock.Unlock()
 	return nil
 }
 
@@ -65,7 +75,10 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
 	// Your code here.
-	m.files = files
+	m.Files = files
+	m.MapIndex = 0
+	m.MapStatus = make([]int, len(files))
+	m.NReduce = nReduce
 	m.server()
 	return &m
 }
