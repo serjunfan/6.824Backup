@@ -28,9 +28,20 @@ type RequestArgs struct {
 
 type RequestReply struct {
 	FileName string
+	abort    bool
 	MapIndex int
 	NReduce  int
 }
+
+/*
+type ReportArgs struct {
+	isSuccess int
+	index     int
+}
+type ReportReply struct {
+	abort bool
+}
+*/
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.

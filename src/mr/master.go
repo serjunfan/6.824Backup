@@ -11,19 +11,30 @@ type Master struct {
 	// Your definitions here.
 	Files     []string
 	MapStatus []int
-	MapIndex  int
-	NReduce   int
-	Lock      sync.Mutex
+	//ReduceStatus []int
+	NReduce int
+	Lock    sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
 func (m *Master) Request(args *RequestArgs, reply *RequestReply) error {
 	m.Lock.Lock()
-	reply.FileName = m.Files[m.MapIndex]
+	index := 0
+	for i := 0; i < len(m.Files); i++ {
+		if m.MapStatus[i] == 0 {
+			index = i
+			break
+		}
+	}
+	if index == len(m.Files) {
+		reply.abort = true
+		m.Lock.Lock()
+		return nil
+	}
+	reply.FileName = m.Files[index]
 	reply.NReduce = m.NReduce
-	reply.MapIndex = m.MapIndex
-	m.MapStatus[m.MapIndex] = 1
-	m.MapIndex++
+	reply.MapIndex = index
+	m.MapStatus[index] = 1
 	m.Lock.Unlock()
 	return nil
 }
@@ -76,8 +87,8 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	// Your code here.
 	m.Files = files
-	m.MapIndex = 0
 	m.MapStatus = make([]int, len(files))
+	//m.ReduceStatus = make([]int, nReduce)
 	m.NReduce = nReduce
 	m.server()
 	return &m
