@@ -10,6 +10,7 @@ import "sync"
 type Master struct {
 	// Your definitions here.
 	Files     []string
+	//0 = not assigned, 1 = assigned, 2 = completed
 	MapStatus []int
 	//ReduceStatus []int
 	NReduce int
@@ -19,18 +20,19 @@ type Master struct {
 // Your code here -- RPC handlers for the worker to call.
 func (m *Master) Request(args *RequestArgs, reply *RequestReply) error {
 	m.Lock.Lock()
-	index := 0
+	index := -1
 	for i := 0; i < len(m.Files); i++ {
 		if m.MapStatus[i] == 0 {
 			index = i
 			break
 		}
 	}
-	if index == len(m.Files) {
-		reply.abort = true
-		m.Lock.Lock()
+	if index >= len(m.Files) || index < 0 {
+		reply.NoWork = true
+		m.Lock.Unlock()
 		return nil
 	}
+	reply.NoWork = false
 	reply.FileName = m.Files[index]
 	reply.NReduce = m.NReduce
 	reply.MapIndex = index
@@ -39,6 +41,21 @@ func (m *Master) Request(args *RequestArgs, reply *RequestReply) error {
 	return nil
 }
 
+func (m *Master) Report(args *ReportArgs, reply *ReportReply) error {
+  m.Lock.Lock()
+  success := args.Success
+  index := args.Index
+  if index < 0 || index >= len(m.Files) {
+    log.Fatalf("Map worker returned a invalid index, should terminate")
+  }
+  if success {
+    m.MapStatus[index] = 2
+  } else {
+    m.MapStatus[index] = 0
+  }
+  m.Lock.Unlock()
+  return nil
+}
 //
 // an example RPC handler.
 //

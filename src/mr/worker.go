@@ -10,6 +10,7 @@ import "sort"
 import "encoding/json"
 import "strings"
 import "strconv"
+import "time"
 
 //
 // Map functions return a slice of KeyValue.
@@ -18,10 +19,11 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
-type Status struct {
+type MapStatus struct {
 	MapIndex int
 	FileName string
 	NReduce  int
+	Success bool
 }
 type ByKey []KeyValue
 
@@ -49,7 +51,15 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the master.
 	//CallExample()
-	CallRequest(mapf)
+	finished := false
+	for ;!finished; {
+	  s := CallRequest(mapf)
+	  if s.Success {
+	    CallReport(s)
+	  }
+	  time.Sleep(5*time.Second)
+	}
+
 }
 
 //
@@ -75,27 +85,45 @@ func CallExample() {
 	fmt.Printf("reply.Y %v\n", reply.Y)
 }
 
-func CallRequest(mapf func(string, string) []KeyValue) {
+func CallRequest(mapf func(string, string) []KeyValue) MapStatus{
 	args := RequestArgs{}
 	reply := RequestReply{}
-	s := Status{}
+	s := MapStatus{}
 	call("Master.Request", &args, &reply)
 
+	s.Success = reply.NoWork
+	if s.Success {
+	  fmt.Println("no map work")
+	  return s
+	}
 	s.FileName = reply.FileName
 	s.MapIndex = reply.MapIndex
 	s.NReduce = reply.NReduce
 	fmt.Printf("RequestReply.FileName %v, Index %v, NReduce %v\n", s.FileName, s.MapIndex, s.NReduce)
-	MapFunction(s, mapf)
+	s.Success = MapFunction(s, mapf)
+	fmt.Println("worker success = ", s.Success)
+	return s
 }
 
-func MapFunction(s Status, mapf func(string, string) []KeyValue) {
+func CallReport(s MapStatus) {
+  args := ReportArgs{}
+  reply := ReportReply{}
+  args.Index = s.MapIndex
+  args.Success = s.Success
+  call("Master.Report", &args, &reply)
+}
+
+func MapFunction(s MapStatus, mapf func(string, string) []KeyValue) bool{
 	intermediate := make([][]KeyValue, s.NReduce)
+	flag := true
 	file, err := os.Open(s.FileName)
 	if err != nil {
+		flag = false
 		log.Fatalf("MapWorkerIndex %v cannot open %v\n", s.MapIndex, s.FileName)
 	}
 	content, err := ioutil.ReadAll(file)
 	if err != nil {
+		flag = false
 		log.Fatalf("MapWorkerIndex %v cannot read %v\n", s.MapIndex, file)
 	}
 	file.Close()
@@ -121,6 +149,7 @@ func MapFunction(s Status, mapf func(string, string) []KeyValue) {
 			}
 		}
 	}
+	return flag
 }
 
 //
