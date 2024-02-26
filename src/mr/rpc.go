@@ -40,6 +40,14 @@ type ReportArgs struct {
 type ReportReply struct {
 }
 
+type ReduceRequestArgs struct {
+}
+
+type ReduceRequestReply struct {
+  NReduce int
+  Index int
+  CanReduce bool
+}
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
 // Can't use the current directory since

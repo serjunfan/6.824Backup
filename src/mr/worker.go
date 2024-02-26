@@ -25,6 +25,11 @@ type MapStatus struct {
 	NReduce  int
 	Success bool
 }
+type ReduceStatus struct {
+	NReduce int
+	CanReduce bool
+	Index int
+}
 type ByKey []KeyValue
 
 func (a ByKey) Len() int           { return len(a) }
@@ -57,6 +62,8 @@ func Worker(mapf func(string, string) []KeyValue,
 	  if s.Success {
 	    CallReport(s)
 	  }
+	  rs := CallReduceRequest()
+	  fmt.Println("rs.CanReduce = ", rs.CanReduce)
 	  time.Sleep(5*time.Second)
 	}
 
@@ -103,6 +110,18 @@ func CallRequest(mapf func(string, string) []KeyValue) MapStatus{
 	s.Success = MapFunction(s, mapf)
 	fmt.Println("worker success = ", s.Success)
 	return s
+}
+
+func CallReduceRequest() ReduceStatus {
+	args := ReduceRequestArgs{}
+	reply := ReduceRequestReply{}
+	rs := ReduceStatus{}
+	call("Master.ReduceRequest", &args, &reply)
+
+	rs.Index = reply.Index
+	rs.CanReduce = reply.CanReduce
+	rs.NReduce = reply.NReduce
+	return rs
 }
 
 func CallReport(s MapStatus) {

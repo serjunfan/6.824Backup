@@ -6,13 +6,16 @@ import "os"
 import "net/rpc"
 import "net/http"
 import "sync"
+import "fmt"
 
 type Master struct {
 	// Your definitions here.
 	Files     []string
+	N int
 	//0 = not assigned, 1 = assigned, 2 = completed
 	MapStatus []int
-	//ReduceStatus []int
+	MapDone bool
+	ReduceStatus []int
 	NReduce int
 	Lock    sync.Mutex
 }
@@ -21,13 +24,13 @@ type Master struct {
 func (m *Master) Request(args *RequestArgs, reply *RequestReply) error {
 	m.Lock.Lock()
 	index := -1
-	for i := 0; i < len(m.Files); i++ {
+	for i := 0; i < m.N; i++ {
 		if m.MapStatus[i] == 0 {
 			index = i
 			break
 		}
 	}
-	if index >= len(m.Files) || index < 0 {
+	if index >= m.N || index < 0 {
 		reply.NoWork = true
 		m.Lock.Unlock()
 		return nil
@@ -45,7 +48,8 @@ func (m *Master) Report(args *ReportArgs, reply *ReportReply) error {
   m.Lock.Lock()
   success := args.Success
   index := args.Index
-  if index < 0 || index >= len(m.Files) {
+  if index < 0 || index >= m.N {
+    m.Lock.Unlock()
     log.Fatalf("Map worker returned a invalid index, should terminate")
   }
   if success {
@@ -53,9 +57,43 @@ func (m *Master) Report(args *ReportArgs, reply *ReportReply) error {
   } else {
     m.MapStatus[index] = 0
   }
+  done := true
+  for i := 0; i < m.N; i++ {
+    if m.MapStatus[i] != 2 {
+      done = false
+      break
+    }
+  }
+  m.MapDone = done
+  fmt.Println("mapdone = ", done)
   m.Lock.Unlock()
   return nil
 }
+
+func (m *Master) ReduceRequest(args *ReduceRequestArgs, reply *ReduceRequestReply) error {
+  m.Lock.Lock()
+  reply.CanReduce = true
+  if !m.MapDone {
+    reply.CanReduce = false
+    m.Lock.Unlock()
+    return nil
+  }
+  index := -1
+  for i := 0; i < m.NReduce; i++ {
+    if m.ReduceStatus[i] == 0 {
+      index = i
+      break
+    }
+  }
+  if index == -1 {
+    reply.CanReduce = false
+  }
+  reply.NReduce = m.NReduce
+  reply.Index = index
+  m.Lock.Unlock()
+  return nil
+}
+
 //
 // an example RPC handler.
 //
@@ -104,8 +142,9 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	// Your code here.
 	m.Files = files
-	m.MapStatus = make([]int, len(files))
-	//m.ReduceStatus = make([]int, nReduce)
+	m.N = len(files)
+	m.MapStatus = make([]int, m.N)
+	m.ReduceStatus = make([]int, nReduce)
 	m.NReduce = nReduce
 	m.server()
 	return &m
