@@ -16,6 +16,7 @@ type Master struct {
 	MapStatus []int
 	MapDone bool
 	ReduceStatus []int
+	ReduceDone bool
 	NReduce int
 	Lock    sync.Mutex
 }
@@ -87,9 +88,39 @@ func (m *Master) ReduceRequest(args *ReduceRequestArgs, reply *ReduceRequestRepl
   }
   if index == -1 {
     reply.CanReduce = false
+    m.Lock.Unlock()
+    return nil
   }
+  m.ReduceStatus[index] = 1
+  reply.N = m.N
   reply.NReduce = m.NReduce
   reply.Index = index
+  m.Lock.Unlock()
+  return nil
+}
+
+func (m *Master) ReduceReport(args *ReduceReportArgs, reply *ReduceReportReply) error {
+  m.Lock.Lock()
+  success := args.Success
+  index := args.Index
+  if index < 0 || index >= m.NReduce {
+    m.Lock.Unlock()
+    log.Fatalf("reduce worker returned a invalid index, should terminate")
+  }
+  if success {
+    m.ReduceStatus[index] = 2
+  } else {
+    m.ReduceStatus[index] = 0
+  }
+  done := true
+  for i := 0; i < m.N; i++ {
+    if m.ReduceStatus[i] != 2 {
+      done = false
+      break
+    }
+  }
+  m.ReduceDone = done
+  fmt.Println("Reducedone = ", done)
   m.Lock.Unlock()
   return nil
 }
@@ -125,11 +156,11 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	ret := false
+	//ret := false
 
 	// Your code here.
 
-	return ret
+	return m.ReduceDone
 }
 
 //

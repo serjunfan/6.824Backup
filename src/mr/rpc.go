@@ -47,6 +47,13 @@ type ReduceRequestReply struct {
   NReduce int
   Index int
   CanReduce bool
+  N int
+}
+type ReduceReportArgs struct {
+  Index int
+  Success bool
+}
+type ReduceReportReply struct {
 }
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
