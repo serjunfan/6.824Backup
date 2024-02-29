@@ -11,6 +11,7 @@ import "encoding/json"
 import "strings"
 import "strconv"
 import "time"
+import "sync"
 
 //
 // Map functions return a slice of KeyValue.
@@ -18,6 +19,12 @@ import "time"
 type KeyValue struct {
 	Key   string
 	Value string
+}
+type HeartBeatStatus struct {
+  State int
+  Index int
+  //HeartBeatInterval int
+  Lock sync.Mutex
 }
 type MapStatus struct {
 	MapIndex int
@@ -59,16 +66,35 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the master.
 	//CallExample()
 	finished := false
+	status := HeartBeatStatus{}
+	status.Index = -1
+	status.State = 0
+	//status.HeartBeatInterval = 9
+	go CallHeartBeat(&status)
 	for ;!finished; {
 	  s := CallRequest()
 	  if s.NReduce > 0 { // = nowork
-	  fmt.Printf("RequestReply.FileName %v, Index %v, NReduce %v\n", s.FileName, s.MapIndex, s.NReduce)
+	    status.Lock.Lock()
+	    status.Index = s.MapIndex
+	    status.State = 1
+	    status.Lock.Unlock()
+	    //fmt.Printf("RequestReply.FileName %v, Index %v, NReduce %v\n", s.FileName, s.MapIndex, s.NReduce)
 	    MapFunction(s, mapf)
 	    CallReport(s)
 	  }
 	  rs := CallReduceRequest()
 	  //fmt.Println("rs.CanReduce = ", rs.CanReduce)
+	  /*
+	    status.Lock.Lock()
+	    status.Index = -1
+	    status.State = 0
+	    status.Lock.Unlock()
+	  */
 	  if rs.CanReduce {
+	    status.Lock.Lock()
+	    status.Index = rs.Index
+	    status.State = 2
+	    status.Lock.Unlock()
 	    ReduceFunction(rs, reducef)
 	    CallReduceReport(rs)
 	  }
@@ -82,6 +108,26 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
+func CallHeartBeat(status *HeartBeatStatus) {
+  for ;; {
+    args := HeartBeatArgs{}
+    status.Lock.Lock()
+    args.Index = status.Index
+    args.State = status.State
+    args.Time = time.Now()
+    status.Lock.Unlock()
+    reply := HeartBeatReply{}
+    call("Master.HeartBeat", &args, &reply)
+    if reply.Abort {
+      status.Lock.Lock()
+      status.Index = -1
+      status.State = 0
+      status.Lock.Unlock()
+    }
+    time.Sleep(8*time.Second)
+  }
+}
+
 func CallExample() {
 
 	// declare an argument structure.
@@ -163,7 +209,7 @@ func MapFunction(s *MapStatus, mapf func(string, string) []KeyValue) {
 		sb.WriteString("-")
 		sb.WriteString(strconv.Itoa(i))
 		oname := sb.String()
-		fmt.Println("test oname = ", oname)
+		//fmt.Println("test oname = ", oname)
 		ofile, _ := os.Create(oname)
 		enc := json.NewEncoder(ofile)
 		for _, kv := range intermediate[i] {
@@ -234,7 +280,7 @@ func ReduceFunction(rs *ReduceStatus, redf func (string, []string)string) {
     log.Fatal(e)
     flag = false
   }
-  fmt.Println("reduce output = ", oname)
+  //fmt.Println("reduce output = ", oname)
   rs.Success = flag
 }
 

@@ -7,6 +7,7 @@ import "net/rpc"
 import "net/http"
 import "sync"
 import "fmt"
+import "time"
 
 type Master struct {
 	// Your definitions here.
@@ -14,10 +15,13 @@ type Master struct {
 	N int
 	//0 = not assigned, 1 = assigned, 2 = completed
 	MapStatus []int
+	MapTime []time.Time
 	MapDone bool
 	ReduceStatus []int
+	ReduceTime []time.Time
 	ReduceDone bool
 	NReduce int
+	WaitTime float64
 	Lock    sync.Mutex
 }
 
@@ -41,6 +45,7 @@ func (m *Master) Request(args *RequestArgs, reply *RequestReply) error {
 	reply.NReduce = m.NReduce
 	reply.MapIndex = index
 	m.MapStatus[index] = 1
+	m.MapTime[index] = time.Now()
 	m.Lock.Unlock()
 	return nil
 }
@@ -66,7 +71,7 @@ func (m *Master) Report(args *ReportArgs, reply *ReportReply) error {
     }
   }
   m.MapDone = done
-  fmt.Println("mapdone = ", done)
+  //fmt.Println("mapdone = ", done)
   m.Lock.Unlock()
   return nil
 }
@@ -92,6 +97,7 @@ func (m *Master) ReduceRequest(args *ReduceRequestArgs, reply *ReduceRequestRepl
     return nil
   }
   m.ReduceStatus[index] = 1
+  m.ReduceTime[index] = time.Now()
   reply.N = m.N
   reply.NReduce = m.NReduce
   reply.Index = index
@@ -113,17 +119,36 @@ func (m *Master) ReduceReport(args *ReduceReportArgs, reply *ReduceReportReply) 
     m.ReduceStatus[index] = 0
   }
   done := true
-  for i := 0; i < m.N; i++ {
+  for i := 0; i < m.NReduce; i++ {
     if m.ReduceStatus[i] != 2 {
       done = false
       break
     }
   }
   m.ReduceDone = done
-  fmt.Println("Reducedone = ", done)
+  //fmt.Println("Reducedone = ", done)
   m.Lock.Unlock()
   return nil
 }
+
+func (m *Master) HeartBeat(args *HeartBeatArgs, reply *HeartBeatReply) error {
+  index := args.Index
+  state := args.State
+  reply.Abort = false
+  if state == 0 {
+    reply.Abort = true
+  }
+  m.Lock.Lock()
+  if state == 1 && index >= 0 && index < m.N{
+    m.MapTime[index] = args.Time
+  }
+  if state == 2 && index >= 0 && index < m.NReduce {
+    m.ReduceTime[index] = args.Time
+  }
+  m.Lock.Unlock()
+  return nil
+}
+
 
 //
 // an example RPC handler.
@@ -135,6 +160,38 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
+func (m *Master) CheckTime(checkMap bool) {
+  for ;; {
+    masterTime := time.Now()
+    //fmt.Println("Checking")
+    m.Lock.Lock()
+    if checkMap {
+      for i := 0; i < m.N; i++ {
+	if m.MapStatus[i] != 1 {
+	  continue
+	}
+	diff := masterTime.Sub(m.MapTime[i]).Seconds()
+	if diff > m.WaitTime {
+	  m.MapStatus[i] = 0
+	  fmt.Printf("map worker %v no response\n", i)
+	}
+      }
+    } else {
+      for i := 0; i < m.NReduce; i++ {
+	if m.ReduceStatus[i] != 1 {
+	  continue
+	}
+	diff := masterTime.Sub(m.ReduceTime[i]).Seconds()
+	if diff > m.WaitTime {
+	  m.ReduceStatus[i] = 0
+	  fmt.Printf("reduce worker %v no response\n", i)
+	}
+      }
+    }
+    m.Lock.Unlock()
+    time.Sleep(8*time.Second)
+  }
+}
 //
 // start a thread that listens for RPCs from worker.go
 //
@@ -175,8 +232,13 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.Files = files
 	m.N = len(files)
 	m.MapStatus = make([]int, m.N)
+	m.MapTime = make([]time.Time, m.N)
 	m.ReduceStatus = make([]int, nReduce)
+	m.ReduceTime = make([]time.Time, nReduce)
 	m.NReduce = nReduce
+	m.WaitTime = 10
 	m.server()
+	go m.CheckTime(false)
+	go m.CheckTime(true)
 	return &m
 }

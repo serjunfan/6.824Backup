@@ -8,7 +8,7 @@ package mr
 
 import "os"
 import "strconv"
-
+import "time"
 //
 // example to show how to declare the arguments
 // and reply for an RPC.
@@ -23,6 +23,14 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
+type HeartBeatArgs struct {
+  Index int
+  State int
+  Time time.Time
+}
+type HeartBeatReply struct {
+  Abort bool
+}
 type RequestArgs struct {
 }
 
