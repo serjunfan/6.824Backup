@@ -20,6 +20,8 @@ package raft
 import "sync"
 import "sync/atomic"
 import "../labrpc"
+import "time"
+import "math/rand"
 
 // import "bytes"
 // import "../labgob"
@@ -46,13 +48,19 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+type LogEntry struct {
+}
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
-
+	term      int
+	votedFor  int
+	log  []LogEntry
+	leaderId  int
+	startElection bool
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -66,6 +74,10 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term = rf.term
+	isleader = rf.me == rf.leaderId
 	return term, isleader
 }
 
@@ -117,6 +129,8 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term int
+	CandidateId int
 }
 
 //
@@ -125,6 +139,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	VoteGranted bool
+	Term int
 }
 
 //
@@ -132,6 +148,7 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+
 }
 
 //
@@ -234,7 +251,30 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.dead = 0
+	rf.term = 0
+	rf.votedFor = -1
+	rf.log = make([]LogEntry,0)
+	rf.leaderId = -1
+	rf.startElection = false
 
+	go func() {
+	  r := rand.New(rand.NewSource(rf.me))
+	  rf.mu.Lock()
+	  if rf.startElection {
+	    for i := 0; i < len(rf.peers); i++{
+	      //DPrintf("Voteforme")
+	    }
+	  }
+	  sleep := 150+r.Intn(150)
+	  DPrintf("%d electionInterval", sleep)
+	  rf.mu.Unlock()
+	  time.Sleep(time.Duration(sleep) * time.Millisecond)
+
+	  rf.mu.Lock()
+	  rf.startElection = true
+	  rf.mu.Unlock()
+	}()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
