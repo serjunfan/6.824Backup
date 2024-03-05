@@ -107,10 +107,10 @@ func (m *Master) ReduceRequest(args *ReduceRequestArgs, reply *ReduceRequestRepl
 
 func (m *Master) ReduceReport(args *ReduceReportArgs, reply *ReduceReportReply) error {
   m.Lock.Lock()
+  defer m.Lock.Unlock()
   success := args.Success
   index := args.Index
   if index < 0 || index >= m.NReduce {
-    m.Lock.Unlock()
     log.Fatalf("reduce worker returned a invalid index, should terminate")
   }
   if success {
@@ -127,7 +127,6 @@ func (m *Master) ReduceReport(args *ReduceReportArgs, reply *ReduceReportReply) 
   }
   m.ReduceDone = done
   //fmt.Println("Reducedone = ", done)
-  m.Lock.Unlock()
   return nil
 }
 
@@ -216,7 +215,8 @@ func (m *Master) Done() bool {
 	//ret := false
 
 	// Your code here.
-
+	m.Lock.Lock()
+	defer m.Lock.Unlock()
 	return m.ReduceDone
 }
 
