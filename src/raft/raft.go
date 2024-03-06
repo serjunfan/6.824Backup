@@ -60,7 +60,7 @@ type Raft struct {
 	votedFor  int
 	log  []LogEntry
 	leaderId  int
-	startElection bool
+	leaderTimestamp time.Time
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -148,6 +148,28 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	reply.VoteGranted = false
+	reply.Term = rf.term
+	if args.Term < rf.term {
+	  return
+	}
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+	  reply.VoteGranted = true
+	  rf.term = args.Term
+	  rf.votedFor = args.CandidateId
+	  rf.leaderTimestamp = time.Now()
+	  DPrintf("%d vote for %d in term %d case1", rf.me, args.CandidateId, rf.term)
+	}
+	if args.Term > rf.term {
+	  reply.VoteGranted = true
+	  rf.term = args.Term
+	  rf.votedFor = args.CandidateId
+	  rf.leaderTimestamp = time.Now()
+	  DPrintf("%d vote for %d in term %d case2", rf.me, args.CandidateId, rf.term)
+	}
 
 }
 
@@ -256,24 +278,72 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.log = make([]LogEntry,0)
 	rf.leaderId = -1
-	rf.startElection = false
+	rf.leaderTimestamp = time.Now()
 
 	go func() {
-	  r := rand.New(rand.NewSource(rf.me))
-	  rf.mu.Lock()
-	  if rf.startElection {
-	    for i := 0; i < len(rf.peers); i++{
-	      //DPrintf("Voteforme")
+	  r := rand.New(rand.NewSource(int64(rf.me)))
+	  for{
+	    electionTimeout := 300 + r.Intn(150)
+	    //DPrintf("%d electionInterval", electionTimeout)
+	    t := time.Now()
+	    rf.mu.Lock()
+	    rf.votedFor = -1
+	    //DPrintf("time diff = %d", t.Sub(rf.leaderTimestamp).Milliseconds())
+	    if t.Sub(rf.leaderTimestamp).Milliseconds() >= int64(electionTimeout) {
+	      // start a new election
+	      var condMu sync.Mutex
+	      cond := sync.NewCond(&condMu)
+	      rf.votedFor = rf.me
+	      count := 1
+	      nextRun := false
+	      electionTimeout = 300 + r.Intn(150)
+	      go func() {
+		time.Sleep(time.Duration(electionTimeout) * time.Millisecond)
+		condMu.Lock()
+		defer condMu.Unlock()
+		nextRun = true
+		cond.Broadcast()
+	      }()
+	      rf.term += 1
+	      rf.votedFor = rf.me
+	      rf.leaderId = -1
+	      for i := 0; i < len(rf.peers); i++{
+		if i == rf.me {
+		  continue
+		}
+		go func(term, me, i int) {
+		  args := RequestVoteArgs{}
+		  reply := RequestVoteReply{}
+		  args.Term = term
+		  args.CandidateId = me
+		  DPrintf("%d asking %d for vote in term %d", me, i, term)
+		  ok := rf.sendRequestVote(i, &args, &reply)
+		  condMu.Lock()
+		  defer condMu.Unlock()
+		  if ok && reply.VoteGranted {
+		    count += 1
+		    cond.Broadcast()
+		  }
+		}(rf.term, rf.me, i)
+	      }
+	      condMu.Lock()
+	      rf.mu.Unlock()
+	      for count < (len(rf.peers)/2)+1 && !nextRun {
+		cond.Wait()
+	      }
+	      rf.mu.Lock()
+	      if rf.leaderId != -1 {
+		DPrintf("%d lose the election, leader is %d in term %d", rf.me, rf.leaderId, rf.term)
+	      } else if count >= (len(rf.peers)/2)+1 {
+		rf.leaderId = rf.me
+		DPrintf("%d is leader now in term %d", rf.me, rf.term)
+	      } else {
+		DPrintf("term %d election timeout", rf.term)
+	      }
 	    }
+	    rf.mu.Unlock()
+	    time.Sleep(300 * time.Millisecond)
 	  }
-	  sleep := 150+r.Intn(150)
-	  DPrintf("%d electionInterval", sleep)
-	  rf.mu.Unlock()
-	  time.Sleep(time.Duration(sleep) * time.Millisecond)
-
-	  rf.mu.Lock()
-	  rf.startElection = true
-	  rf.mu.Unlock()
 	}()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
