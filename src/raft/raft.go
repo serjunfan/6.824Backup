@@ -48,8 +48,17 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+type State string
+
+const (
+  Follower State = "follower"
+  Candidate = "candidate"
+  Leader = "leader"
+)
+
 type LogEntry struct {
 }
+
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -61,6 +70,7 @@ type Raft struct {
 	log  []LogEntry
 	leaderId  int
 	leaderTimestamp time.Time
+	state State
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -161,6 +171,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	  rf.term = args.Term
 	  rf.votedFor = args.CandidateId
 	  rf.leaderTimestamp = time.Now()
+	  rf.State = Follower
 	  DPrintf("%d vote for %d in term %d case1", rf.me, args.CandidateId, rf.term)
 	}
 	if args.Term > rf.term {
@@ -168,6 +179,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	  rf.term = args.Term
 	  rf.votedFor = args.CandidateId
 	  rf.leaderTimestamp = time.Now()
+	  rf.State = Follower
 	  DPrintf("%d vote for %d in term %d case2", rf.me, args.CandidateId, rf.term)
 	}
 
@@ -279,6 +291,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log = make([]LogEntry,0)
 	rf.leaderId = -1
 	rf.leaderTimestamp = time.Now()
+	rf.state = Follower
 
 	go func() {
 	  r := rand.New(rand.NewSource(int64(rf.me)))
@@ -297,6 +310,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	      count := 1
 	      nextRun := false
 	      electionTimeout = 300 + r.Intn(150)
+	      // setting up election timer
 	      go func() {
 		time.Sleep(time.Duration(electionTimeout) * time.Millisecond)
 		condMu.Lock()
@@ -304,6 +318,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		nextRun = true
 		cond.Broadcast()
 	      }()
+	      rf.state = Candidate
 	      rf.term += 1
 	      rf.votedFor = rf.me
 	      rf.leaderId = -1
@@ -333,8 +348,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	      }
 	      rf.mu.Lock()
 	      if rf.leaderId != -1 {
+		rf.state = Follower
 		DPrintf("%d lose the election, leader is %d in term %d", rf.me, rf.leaderId, rf.term)
 	      } else if count >= (len(rf.peers)/2)+1 {
+		rf.state = Leader
 		rf.leaderId = rf.me
 		DPrintf("%d is leader now in term %d", rf.me, rf.term)
 	      } else {
