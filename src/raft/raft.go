@@ -148,7 +148,7 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
   reply.Term = rf.term
   reply.Success = false
   if args.Term < rf.term {
-    DPrintf("%d Received a RequestAppendEntries from %d with args %d smaller then %d, discarded", rf.me, args.LeaderId, args.Term, rf.term)
+    DPrintf("%d Received a RequestAppendEntries from %d with term %d smaller then %d, discarded", rf.me, args.LeaderId, args.Term, rf.term)
     return
   }
   //heartbeat condition
@@ -220,6 +220,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	reply.VoteGranted = false
 	reply.Term = rf.term
+	DPrintf("%d received voteReqeust from %d with term %d", rf.me, args.CandidateId, args.Term)
 	if args.Term < rf.term {
 	  return
 	}
