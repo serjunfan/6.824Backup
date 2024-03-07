@@ -171,7 +171,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	  rf.term = args.Term
 	  rf.votedFor = args.CandidateId
 	  rf.leaderTimestamp = time.Now()
-	  rf.State = Follower
+	  rf.state = Follower
 	  DPrintf("%d vote for %d in term %d case1", rf.me, args.CandidateId, rf.term)
 	}
 	if args.Term > rf.term {
@@ -179,7 +179,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	  rf.term = args.Term
 	  rf.votedFor = args.CandidateId
 	  rf.leaderTimestamp = time.Now()
-	  rf.State = Follower
+	  rf.state = Follower
 	  DPrintf("%d vote for %d in term %d case2", rf.me, args.CandidateId, rf.term)
 	}
 
@@ -217,6 +217,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
+}
+
+func (rf *Raft) CallRequestVote(term, candidateId, server int)(bool, *RequestVoteReply){
+	args := RequestVoteArgs{}
+	reply := RequestVoteReply{}
+	args.Term = term
+	args.CandidateId = candidateId
+	DPrintf("%d asking %d for vote in term %d", candidateId, server, term)
+	ok := rf.sendRequestVote(server, &args, &reply)
+	return ok, &reply
 }
 
 
@@ -266,6 +276,57 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) attemptElection(r *rand.Rand) bool{
+  condMu := sync.Mutex{}
+  cond := sync.NewCond(&condMu)
+  rf.votedFor = rf.me
+  count := 1
+  nextRun := false
+  electionTimeout := 300 + r.Intn(150)
+  // setting up election timer
+  go func() {
+    time.Sleep(time.Duration(electionTimeout) * time.Millisecond)
+    condMu.Lock()
+    defer condMu.Unlock()
+    nextRun = true
+    cond.Broadcast()
+  }()
+  rf.state = Candidate
+  rf.term += 1
+  rf.votedFor = rf.me
+  rf.leaderId = -1
+  for server, _ := range rf.peers{
+    if server == rf.me {
+      continue
+    }
+    go func(term, me, server int) {
+      ok, reply := rf.CallRequestVote(term, me, server)
+      condMu.Lock()
+      defer condMu.Unlock()
+      if ok && reply.VoteGranted {
+	count += 1
+	cond.Broadcast()
+      }
+    }(rf.term, rf.me, server)
+  }
+  condMu.Lock()
+  rf.mu.Unlock()
+  for count < (len(rf.peers)/2)+1 && !nextRun {
+    cond.Wait()
+  }
+  rf.mu.Lock()
+  if rf.leaderId != -1 {
+    rf.state = Follower
+    DPrintf("%d lose the election, leader is %d in term %d", rf.me, rf.leaderId, rf.term)
+  } else if count >= (len(rf.peers)/2)+1 {
+    rf.state = Leader
+    rf.leaderId = rf.me
+    DPrintf("%d is leader now in term %d", rf.me, rf.term)
+  } else {
+    DPrintf("term %d election timeout", rf.term)
+  }
+  return nextRun
+}
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -301,62 +362,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	    t := time.Now()
 	    rf.mu.Lock()
 	    rf.votedFor = -1
+	    nextRun := false
 	    //DPrintf("time diff = %d", t.Sub(rf.leaderTimestamp).Milliseconds())
-	    if t.Sub(rf.leaderTimestamp).Milliseconds() >= int64(electionTimeout) {
-	      // start a new election
-	      var condMu sync.Mutex
-	      cond := sync.NewCond(&condMu)
-	      rf.votedFor = rf.me
-	      count := 1
-	      nextRun := false
-	      electionTimeout = 300 + r.Intn(150)
-	      // setting up election timer
-	      go func() {
-		time.Sleep(time.Duration(electionTimeout) * time.Millisecond)
-		condMu.Lock()
-		defer condMu.Unlock()
-		nextRun = true
-		cond.Broadcast()
-	      }()
-	      rf.state = Candidate
-	      rf.term += 1
-	      rf.votedFor = rf.me
-	      rf.leaderId = -1
-	      for i := 0; i < len(rf.peers); i++{
-		if i == rf.me {
-		  continue
-		}
-		go func(term, me, i int) {
-		  args := RequestVoteArgs{}
-		  reply := RequestVoteReply{}
-		  args.Term = term
-		  args.CandidateId = me
-		  DPrintf("%d asking %d for vote in term %d", me, i, term)
-		  ok := rf.sendRequestVote(i, &args, &reply)
-		  condMu.Lock()
-		  defer condMu.Unlock()
-		  if ok && reply.VoteGranted {
-		    count += 1
-		    cond.Broadcast()
-		  }
-		}(rf.term, rf.me, i)
-	      }
-	      condMu.Lock()
-	      rf.mu.Unlock()
-	      for count < (len(rf.peers)/2)+1 && !nextRun {
-		cond.Wait()
-	      }
-	      rf.mu.Lock()
-	      if rf.leaderId != -1 {
-		rf.state = Follower
-		DPrintf("%d lose the election, leader is %d in term %d", rf.me, rf.leaderId, rf.term)
-	      } else if count >= (len(rf.peers)/2)+1 {
-		rf.state = Leader
-		rf.leaderId = rf.me
-		DPrintf("%d is leader now in term %d", rf.me, rf.term)
-	      } else {
-		DPrintf("term %d election timeout", rf.term)
-	      }
+	    if t.Sub(rf.leaderTimestamp).Milliseconds() >= int64(electionTimeout) || nextRun {
+	      //startElection
+	      nextRun = rf.attemptElection(r)
 	    }
 	    rf.mu.Unlock()
 	    time.Sleep(300 * time.Millisecond)
