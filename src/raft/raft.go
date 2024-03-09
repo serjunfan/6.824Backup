@@ -416,8 +416,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.leaderTimestamp = time.Now()
 	rf.state = Follower
 
+	//heartbeat
 	go func() {
-	  for {
+	  for rf.killed() == false {
 	    rf.mu.Lock()
 	    if rf.state == Leader {
 	      rf.leaderTimestamp = time.Now()
@@ -436,9 +437,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	    time.Sleep(200 * time.Millisecond)
 	  }
 	}()
+	//election
 	go func() {
-	  r := rand.New(rand.NewSource(int64(rf.me)))
-	  for{
+	  for rf.killed() == false{
+	    r := rand.New(rand.NewSource(int64(rf.me)))
 	    electionTimeout := 300 + r.Intn(150)
 	    //DPrintf("%d electionInterval", electionTimeout)
 	    t := time.Now()
