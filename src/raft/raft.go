@@ -145,6 +145,18 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
   Term int
   Success bool
+  Xterm int //conflicting follower's log entry, -1 if none
+  Xindex int //first index of Xterm
+  Xlen int // len of follower's log
+}
+
+func printLog(s []LogEnry) {
+  fmt.Print("[")
+  for i, _ range := s {
+    fmt.Print(s[i], ",")
+  }
+  fmt.Print("]")
+  fmt.Println()
 }
 
 //handler for AppendEntries RPC
@@ -157,14 +169,48 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
     rf.mu.Unlock()
     return
   }
-  //heartbeat condition
+  rf.leaderTimestamp = time.Now()
+  rf.votedFor = args.LeaderId
+  rf.leaderId = args.LeaderId
+  rf.state = Follower
+  rf.term = args.Term
   if len(args.Entries) == 0 {
-    rf.term = args.Term
-    rf.leaderTimestamp = time.Now()
-    rf.votedFor = args.LeaderId
-    rf.state = Follower
-    rf.leaderId = args.LeaderId
+    if len(rf.log) > args.PrevLogIndex && rf.log[args.PrevLogIndex].Term == args.PrevLogTerm {
+      reply.Success = true
+    }
     DPrintf("%d Received heartbeat from %d with term %d", rf.me, args.LeaderId, args.Term)
+  } else {
+    if len(rf.log) > args.PrevLogIndx && rf.log[args.PrevLogIndex].Term == args.PrevLogTerm {
+      //find the first missing or conflicting log index
+      offset := 0
+      for ; offset < len(args.Entries); offset++ {
+	argsIndex := args.PrevLogIndex+offset+1
+	if argsIndex >= len(rf.log) || args.Entries[argsIndex].Term != rf.log[argsIndex].term {
+	  break
+	}
+      }
+      rf.log = rf.log[:args.PrevLogIndex+offset+1]
+      for ; offset < len(args.Entries); offset++ {
+	rf.log = append(rf.log, arg.Entries[offset])
+      }
+      reply.Success = true
+    } else if len(rf.log) <= args.PrevLogIndex {
+      //case 3
+      reply.Xterm = -1
+      reply.Xindex = -1
+      reply.Xlen = len(rf.log)
+    } else {
+      reply.Xterm = rf.log[args.PrevLogIndex]
+      for index := args.PrevLogIndex; index >= 1; index-- {
+	if rf.log[index-1].term != reply.Xterm {
+	  break
+	}
+      }
+      //Sanity check
+      if index == 1 && rf.log[index].term == rf.log[0].term {
+	panic("fast backup handler panic")
+      }
+    }
   }
   rf.mu.Unlock()
 }
@@ -177,35 +223,32 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) CallAppendEntries(server int, isHeartbeat bool) {
   args := AppendEntriesArgs{}
   reply := AppendEntriesReply{}
+
+  rf.mu.Lock()
+  args.Term = rf.term
+  args.LeaderId = rf.me
+  //preparing entries based on condition
+  //leaderIndex := len(rf.log)-1
+  //serverIndex := rf.nextIndex[server]
+  rf.mu.Unlock()
+
   for;; {
     rf.mu.Lock()
-    if rf.state != Leader {
+    if rf.state != Leader || rf.term > args.Term || rf.nextIndex[server] > len(rf.log) - 1{
       rf.Unlock()
       return
     }
-    //preparing entries based on condition
-    leaderIndex := len(rf.log)-1
-    serverIndex := rf.nextIndex[server]
+    args.PrevLogIndex = rf.nextIndex[server]-1
+    args.PrevLogTerm = rf.log[args.PrevLogIndex]
     if isHeartbeat {
       args.Entries = make([]LogEntry, 0)
     }
     else {
-      if leaderIndex >= serverIndex {
-	args.Entries = rf.log[serverIndex:]
-      } else {
-	rf.Unlock()
-	return
-      }
+      args.Entries = rf.log[nextIndex:]
     }
-    args.Term = rf.term
-    args.LeaderId = rf.me
-    //prevLogIndex = newest log in leader
-    //so not len(rf.log)-2, think what if len(rf.log) == 1
-    args.PrevLogIndex = len(rf.log)-1
-    args.PrevLogTerm = rf.log[args.PrevLogIndex]
-    rf.mu.Unlock()
-    //DPrintf("%d sending heartbeat to %d in term %d", me, server, term)
 
+    //DPrintf("%d sending appendRPC to %d in term %d", me, server, term)
+    rf.mu.Unlock()
     rf.sendAppendEntries(server, &args, &reply)
 
     rf.mu.Lock()
@@ -216,18 +259,39 @@ func (rf *Raft) CallAppendEntries(server int, isHeartbeat bool) {
       rf.leaderId = server
       rf.leaderTimestamp = time.Now()
       rf.mu.Unlock()
-      DPrintf("%d heartbeat received higher term from %d, revertgin back to follower state", rf.me, server)
+      DPrintf("%d AppendEntriesRPC received higher term from %d, revertgin back to follower state", rf.me, server)
       return
     }
+    if args.Term < rf.term {
+      rf.mu.Unlock()
+      DPrintf("Old AppendEntriesRPC, just return and don't process the reply")
+      return
+    }
+
     if reply.Success {
-      if rf.nextIndex[server] < leaderIndex {
-	rf.nextIndex[server] = leaderIndex+1
-	rf.matchIndex[server] = leaderIndex
+      if rf.nextIndex[server] < args.PrevLogIndex + len(args.Entries) + 1 {
+	rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
+      }
+      if rf.matchIndex[server] < args.PrevLogIndex + len(args.Entries) {
+	rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
       }
       rf.mu.Unlock()
       return
     } else {
-      rf.nextIndex[server] = serverIndex-1
+      if isHeartbeat {
+	rf.mu.Unlock()
+	return
+      }
+      if reply.XTerm == -1 {
+	rf.nextIndex[server] = reply.Xlen
+      } else {
+	 lastXtermIndex = lastXtermIndex(rf.log, reply.Xterm)
+	if lastXtermIndex != -1 {
+	  rf.nextIndex[server] = lastXtermIndex+1
+	} else {
+	  rf.nextIndex[server] = reply.XIndex
+	}
+      }
     }
     rf.mu.Unlock()
     //labs hint suggest we sleep between loops
@@ -235,6 +299,22 @@ func (rf *Raft) CallAppendEntries(server int, isHeartbeat bool) {
   }
 }
 
+func lastXtermIndex(log []LogEntry, Xterm int) int {
+  l := 0
+  r := len(log)
+  for; l < r ; {
+    m := l + (r-l)/2
+    if log[m].term <= Xterm {
+      l = m+1
+    } else if log[m].term > Xterm {
+      r = m
+    }
+  }
+  if l == 0 || log[l-1].term != Xterm {
+    return -1
+  }
+  return l-1
+}
 
 func (rf *Raft) doHeartbeat() {
   for server, _ := range rf.peers {
@@ -369,15 +449,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	newlog.Command = command
 	index = len(rf.log)
 	term = rf.term
-	leaderId = rf.leaderId
-	prevLogIndex = index-1
-	prevLogTerm = rf.log[prevLogIndex].Term
 	rf.log = append(rf.log, newlog)
 	rf.mu.Unlock()
 	for server, _ := range rf.peers {
 	  if server == rf.me { continue }
 	  else {
-	    go rf.sendAppendLog(term, leaderId, prevLogIndex, prevLogTerm)
+	    go rf.CallAppendEntries(server, false)
 	  }
 	}
 
