@@ -22,7 +22,7 @@ import "sync/atomic"
 import "../labrpc"
 import "time"
 import "math/rand"
-
+import "fmt"
 // import "bytes"
 // import "../labgob"
 
@@ -150,13 +150,13 @@ type AppendEntriesReply struct {
   Xlen int // len of follower's log
 }
 
-func printLog(s []LogEnry) {
+func printLog(s []LogEntry) {
   fmt.Print("[")
-  for i, _ range := s {
-    fmt.Print(s[i], ",")
+  for i, _ := range s {
+    fmt.Print(s[i].Term, ",")
   }
   fmt.Print("]")
-  fmt.Println()
+  fmt.Println("")
 }
 
 //handler for AppendEntries RPC
@@ -180,18 +180,22 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
     }
     DPrintf("%d Received heartbeat from %d with term %d", rf.me, args.LeaderId, args.Term)
   } else {
-    if len(rf.log) > args.PrevLogIndx && rf.log[args.PrevLogIndex].Term == args.PrevLogTerm {
+    DPrintf("Follower %d 's log is as follow:", rf.me)
+    printLog(rf.log)
+    DPrintf("Leader %d sent log as follow:", args.LeaderId)
+    printLog(args.Entries)
+    if len(rf.log) > args.PrevLogIndex && rf.log[args.PrevLogIndex].Term == args.PrevLogTerm {
       //find the first missing or conflicting log index
       offset := 0
       for ; offset < len(args.Entries); offset++ {
 	argsIndex := args.PrevLogIndex+offset+1
-	if argsIndex >= len(rf.log) || args.Entries[argsIndex].Term != rf.log[argsIndex].term {
+	if argsIndex >= len(rf.log) || args.Entries[argsIndex].Term != rf.log[argsIndex].Term {
 	  break
 	}
       }
       rf.log = rf.log[:args.PrevLogIndex+offset+1]
       for ; offset < len(args.Entries); offset++ {
-	rf.log = append(rf.log, arg.Entries[offset])
+	rf.log = append(rf.log, args.Entries[offset])
       }
       reply.Success = true
     } else if len(rf.log) <= args.PrevLogIndex {
@@ -200,14 +204,16 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
       reply.Xindex = -1
       reply.Xlen = len(rf.log)
     } else {
-      reply.Xterm = rf.log[args.PrevLogIndex]
-      for index := args.PrevLogIndex; index >= 1; index-- {
-	if rf.log[index-1].term != reply.Xterm {
+      reply.Xterm = rf.log[args.PrevLogIndex].Term
+      index := args.PrevLogIndex
+      for ; index >= 1; index-- {
+	if rf.log[index-1].Term != reply.Xterm {
 	  break
 	}
       }
+      reply.Xindex = index
       //Sanity check
-      if index == 1 && rf.log[index].term == rf.log[0].term {
+      if index == 1 && rf.log[index].Term == rf.log[0].Term {
 	panic("fast backup handler panic")
       }
     }
@@ -227,24 +233,24 @@ func (rf *Raft) CallAppendEntries(server int, isHeartbeat bool) {
   rf.mu.Lock()
   args.Term = rf.term
   args.LeaderId = rf.me
-  //preparing entries based on condition
-  //leaderIndex := len(rf.log)-1
-  //serverIndex := rf.nextIndex[server]
+  rf.leaderTimestamp = time.Now()
   rf.mu.Unlock()
 
   for;; {
     rf.mu.Lock()
-    if rf.state != Leader || rf.term > args.Term || rf.nextIndex[server] > len(rf.log) - 1{
-      rf.Unlock()
+    if rf.state != Leader || rf.term > args.Term {
+      rf.mu.Unlock()
       return
     }
     args.PrevLogIndex = rf.nextIndex[server]-1
-    args.PrevLogTerm = rf.log[args.PrevLogIndex]
+    args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
     if isHeartbeat {
       args.Entries = make([]LogEntry, 0)
-    }
-    else {
-      args.Entries = rf.log[nextIndex:]
+    } else if rf.nextIndex[server] > len(rf.log) - 1 {
+      rf.mu.Unlock()
+      return
+    } else {
+      args.Entries = rf.log[rf.nextIndex[server]:]
     }
 
     //DPrintf("%d sending appendRPC to %d in term %d", me, server, term)
@@ -269,6 +275,7 @@ func (rf *Raft) CallAppendEntries(server int, isHeartbeat bool) {
     }
 
     if reply.Success {
+      DPrintf("Leader %d in term %d receive Success from %d in term %d", rf.me, args.Term, server, reply.Term)
       if rf.nextIndex[server] < args.PrevLogIndex + len(args.Entries) + 1 {
 	rf.nextIndex[server] = args.PrevLogIndex + len(args.Entries) + 1
       }
@@ -282,14 +289,14 @@ func (rf *Raft) CallAppendEntries(server int, isHeartbeat bool) {
 	rf.mu.Unlock()
 	return
       }
-      if reply.XTerm == -1 {
+      if reply.Xterm == -1 {
 	rf.nextIndex[server] = reply.Xlen
       } else {
-	 lastXtermIndex = lastXtermIndex(rf.log, reply.Xterm)
+	lastXtermIndex := lastXtermIndex(rf.log, reply.Xterm)
 	if lastXtermIndex != -1 {
 	  rf.nextIndex[server] = lastXtermIndex+1
 	} else {
-	  rf.nextIndex[server] = reply.XIndex
+	  rf.nextIndex[server] = reply.Xindex
 	}
       }
     }
@@ -304,13 +311,16 @@ func lastXtermIndex(log []LogEntry, Xterm int) int {
   r := len(log)
   for; l < r ; {
     m := l + (r-l)/2
-    if log[m].term <= Xterm {
+    if log[m].Term <= Xterm {
       l = m+1
-    } else if log[m].term > Xterm {
+    } else if log[m].Term > Xterm {
       r = m
     }
   }
-  if l == 0 || log[l-1].term != Xterm {
+  if l == 0 && log[l].Term == Xterm {
+    return 0
+  }
+  if log[l-1].Term != Xterm {
     return -1
   }
   return l-1
@@ -318,7 +328,7 @@ func lastXtermIndex(log []LogEntry, Xterm int) int {
 
 func (rf *Raft) doHeartbeat() {
   for server, _ := range rf.peers {
-    if server == me {
+    if server == rf.me {
       continue
     }
     go func(server int, isHeartbeat bool) {
@@ -438,6 +448,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Your code here (2B).
 	rf.mu.Lock()
+	DPrintf("with LeaderId = %d, %d Start!!",rf.leaderId, rf.me)
 	if rf.state != Leader {
 	  rf.mu.Unlock()
 	  isLeader = false
@@ -452,8 +463,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.log = append(rf.log, newlog)
 	rf.mu.Unlock()
 	for server, _ := range rf.peers {
-	  if server == rf.me { continue }
-	  else {
+	  if server == rf.me {
+	    continue
+	  } else {
 	    go rf.CallAppendEntries(server, false)
 	  }
 	}
@@ -543,7 +555,7 @@ func (rf *Raft) attemptElection(r *rand.Rand) {
       rf.leaderId = rf.me
       rf.leaderTimestamp = time.Now()
       //DPrintf("%d is leader now in term %d", rf.me, rf.term)
-      rf.initializaIndex()
+      rf.initializeIndex()
       rf.mu.Unlock()
       rf.doHeartbeat()
       DPrintf("---%d sending heartbeat upon being leader---", rf.me)
@@ -598,7 +610,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	  for rf.killed() == false {
 	    rf.mu.Lock()
 	    if rf.state == Leader {
-	      rf.mu.Unlock()
 	      rf.doHeartbeat()
 	    }
 	    rf.mu.Unlock()
