@@ -23,6 +23,7 @@ import "../labrpc"
 import "time"
 import "math/rand"
 import "fmt"
+import "sort"
 // import "bytes"
 // import "../labgob"
 
@@ -75,6 +76,7 @@ type Raft struct {
 	state State
 	nextIndex []int
 	matchIndex []int
+	committedIndex int
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
@@ -140,6 +142,7 @@ type AppendEntriesArgs struct {
   Entries []LogEntry
   PrevLogIndex int
   PrevLogTerm int
+  LeaderCommit int
 }
 
 type AppendEntriesReply struct {
@@ -157,6 +160,13 @@ func printLog(s []LogEntry) {
   }
   fmt.Print("]")
   fmt.Println("")
+}
+
+func min(i, j int) int {
+  if i < j {
+    return i
+  }
+  return j
 }
 
 //handler for AppendEntries RPC
@@ -180,22 +190,27 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
     }
     DPrintf("%d Received heartbeat from %d with term %d", rf.me, args.LeaderId, args.Term)
   } else {
+    /*
     DPrintf("Follower %d 's log is as follow:", rf.me)
-    printLog(rf.log)
+    DPrintf(rf.log)
     DPrintf("Leader %d sent log as follow:", args.LeaderId)
-    printLog(args.Entries)
+    DPrintf(args.Entries)
+    */
     if len(rf.log) > args.PrevLogIndex && rf.log[args.PrevLogIndex].Term == args.PrevLogTerm {
       //find the first missing or conflicting log index
       offset := 0
       for ; offset < len(args.Entries); offset++ {
-	argsIndex := args.PrevLogIndex+offset+1
-	if argsIndex >= len(rf.log) || args.Entries[argsIndex].Term != rf.log[argsIndex].Term {
+	followerIndex := args.PrevLogIndex+offset+1
+	if followerIndex >= len(rf.log) || args.Entries[offset].Term != rf.log[followerIndex].Term {
 	  break
 	}
       }
       rf.log = rf.log[:args.PrevLogIndex+offset+1]
       for ; offset < len(args.Entries); offset++ {
 	rf.log = append(rf.log, args.Entries[offset])
+      }
+      if args.LeaderCommit > rf.committedIndex {
+	rf.committedIndex = min(args.PrevLogIndex+len(args.Entries), args.LeaderCommit)
       }
       reply.Success = true
     } else if len(rf.log) <= args.PrevLogIndex {
@@ -233,6 +248,7 @@ func (rf *Raft) CallAppendEntries(server int, isHeartbeat bool) {
   rf.mu.Lock()
   args.Term = rf.term
   args.LeaderId = rf.me
+  args.LeaderCommit = rf.committedIndex
   rf.leaderTimestamp = time.Now()
   rf.mu.Unlock()
 
@@ -545,10 +561,10 @@ func (rf *Raft) attemptElection(r *rand.Rand) {
 
     rf.mu.Lock()
     if curTerm < rf.term || rf.state != Candidate {
-      rf.mu.Unlock()
       finished = true
       DPrintf("%d lose the election since the term from %d to %d", rf.me, curTerm, rf.term)
       DPrintf("or we are no longer a Candidate for some reason")
+      rf.mu.Unlock()
     } else if count >= (len(rf.peers)/2)+1 {
       finished = true
       rf.state = Leader
@@ -576,6 +592,29 @@ func (rf *Raft) initializeIndex() {
   }
 }
 
+func(rf *Raft) getN(majority int) int {
+  curTerm := rf.log[len(rf.log)-1].Term
+  l := 0
+  h := len(rf.log)-1
+  for; l < h;{
+    m := l + (h-l)/2
+    if rf.log[m].Term < curTerm {
+      l = m+1
+    } else {
+      h = m
+    }
+  }
+  h = len(rf.log)-1
+  for;l < h; {
+    m := h - (h-l)/2
+    if m <= majority {
+      l = m
+    }else {
+      h = m-1
+    }
+  }
+  return l
+}
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -605,6 +644,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
+	rf.committedIndex = 0
 	//heartbeat
 	go func() {
 	  for rf.killed() == false {
@@ -621,6 +661,29 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	  for rf.killed() == false{
 	    r := rand.New(rand.NewSource(int64(rf.me)))
 	    rf.attemptElection(r)
+	    time.Sleep(300 * time.Millisecond)
+	  }
+	}()
+	//CommitChecker
+	go func() {
+	  for rf.killed() == false {
+	    rf.mu.Lock()
+	    if rf.state == Leader {
+	      matched := make([]int, 0)
+	      for i, _ := range rf.peers {
+		matched = append(matched, rf.matchIndex[i])
+	      }
+	      sort.Ints(matched)
+	      //DPrintf("sorted matchedIndex")
+	      //DPrintf(matched)
+	      majority := matched[(len(matched)-1)/2]
+	      N := rf.getN(majority)
+	      if N < rf.committedIndex {
+		panic("committedIndex decrease")
+	      }
+	      rf.committedIndex = N
+	    }
+	    rf.mu.Unlock()
 	    time.Sleep(300 * time.Millisecond)
 	  }
 	}()
