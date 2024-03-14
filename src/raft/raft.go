@@ -360,6 +360,8 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term int
 	CandidateId int
+	LastLogIndex int
+	LastLogTerm int
 }
 
 //
@@ -384,6 +386,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.term
 	DPrintf("%d received voteReqeust from %d with term %d", rf.me, args.CandidateId, args.Term)
 	if args.Term < rf.term {
+	  return
+	}
+	if args.LastLogTerm < rf.log[len(rf.log)-1].Term {
+	  return
+	}
+	if args.LastLogIndex < len(rf.log)-1 {
 	  return
 	}
 	if args.Term > rf.term || rf.votedFor == -1 || rf.votedFor == args.CandidateId {
@@ -435,6 +443,8 @@ func (rf *Raft) CallRequestVote(term, candidateId, server int) *RequestVoteReply
 	reply := RequestVoteReply{}
 	args.Term = term
 	args.CandidateId = candidateId
+	args.LastLogIndex = len(rf.log) - 1
+	args.LastLogTerm = rf.log[args.LastLogIndex].Term
 	DPrintf("%d asking %d for vote in term %d", candidateId, server, term)
 	ok := rf.sendRequestVote(server, &args, &reply)
 	if !ok {
@@ -591,7 +601,7 @@ func (rf *Raft) initializeIndex() {
     rf.nextIndex[i] = len(rf.log)
   }
 }
-
+/*
 func(rf *Raft) getN(majority int) int {
   curTerm := rf.log[len(rf.log)-1].Term
   l := 0
@@ -613,8 +623,13 @@ func(rf *Raft) getN(majority int) int {
       h = m-1
     }
   }
+  if majority < l {
+    DPrintf("majorityIndex %d is < curTerm %d", majority, rf.log[len(rf.log)-1].Term)
+    return -1
+  }
   return l
 }
+*/
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -677,11 +692,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	      //DPrintf("sorted matchedIndex")
 	      //DPrintf(matched)
 	      majority := matched[(len(matched)-1)/2]
-	      N := rf.getN(majority)
-	      if N < rf.committedIndex {
-		panic("committedIndex decrease")
+	      if rf.committedIndex < majority {
+		DPrintf("Before commitedIndex = %d, after = %d", rf.committedIndex, majority)
+		rf.committedIndex = majority
 	      }
-	      rf.committedIndex = N
 	    }
 	    rf.mu.Unlock()
 	    time.Sleep(300 * time.Millisecond)
