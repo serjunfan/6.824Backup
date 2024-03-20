@@ -187,7 +187,6 @@ func min(i, j int) int {
 
 //handler for AppendEntries RPC
 func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-  //rf.applyCondMu.Lock()
   rf.mu.Lock()
   reply.Term = rf.term
   reply.Success = false
@@ -263,7 +262,6 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
   }
   rf.applyCondMu.Unlock()
   rf.mu.Unlock()
-  //rf.applyCondMu.Unlock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -273,9 +271,10 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 func (rf *Raft) CallAppendEntries(server int) {
   rf.mu.Lock()
-
+  rf.applyCondMu.Lock()
   if rf.state != Leader {
     DPrintf("%d is not leader anymore, don't sendRPC", rf.me)
+    rf.applyCondMu.Unlock()
     rf.mu.Unlock()
     return
   }
@@ -287,6 +286,7 @@ func (rf *Raft) CallAppendEntries(server int) {
   args.LeaderCommit = rf.committedIndex
   args.PrevLogIndex = rf.nextIndex[server]-1
   args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+
   // neccesary?
   if rf.nextIndex[server] > len(rf.log) {
     panic("rf.nextIndex > len(rf.log)")
@@ -296,6 +296,7 @@ func (rf *Raft) CallAppendEntries(server int) {
   }
   args.Entries = rf.log[rf.nextIndex[server]:]
   DPrintf("%d sending appendRPC to %d in term %d, it's nextIndex = %d", rf.leaderId, server, rf.term, rf.nextIndex[server])
+  rf.applyCondMu.Unlock()
   rf.mu.Unlock()
   rf.sendAppendEntries(server, &args, &reply)
 
@@ -690,7 +691,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	      }
 	      rf.applyCond.Wait()
 	    }
-	    //rf.mu.Lock()
+	    //insure we first acquire mu then applyCondMu
+	    rf.applyCondMu.Unlock()
+	    rf.mu.Lock()
+	    rf.applyCondMu.Lock()
 	    DPrintf("lastapplied = %d, committedIndex = %d", rf.lastApplied, rf.committedIndex)
 	    for ;rf.lastApplied < rf.committedIndex;{
 	      rf.lastApplied++
@@ -701,8 +705,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	      DPrintf("%d's lastApplied = %d",rf.me, rf.lastApplied)
 	      rf.applyCh <- msg
 	    }
-	    //rf.mu.Unlock()
 	    rf.applyCondMu.Unlock()
+	    rf.mu.Unlock()
 	  }
 	}()
 	// heartbeat
@@ -732,7 +736,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//CommitChecker
 	go func() {
 	  for rf.killed() == false {
-	    //rf.applyCondMu.Lock()
 	    rf.mu.Lock()
 	    if rf.state == Leader {
 	      matched := make([]int, 0)
@@ -755,7 +758,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	      rf.applyCondMu.Unlock()
 	    }
 	    rf.mu.Unlock()
-	    //rf.applyCondMu.Unlock()
 	    time.Sleep(300 * time.Millisecond)
 	  }
 	}()
