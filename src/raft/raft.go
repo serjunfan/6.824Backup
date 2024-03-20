@@ -559,86 +559,74 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) attemptElection() {
-  r := rand.New(rand.NewSource(time.Now().UnixNano()))
-
+// attmpeelection, return should we restart a new election
+func (rf *Raft) attemptElection(electionInterval, electionTime int) bool{
   rf.mu.Lock()
-  interval := 300
+  restart := false
   t := time.Now()
   //if no need to start election, return
-  if rf.state == Leader || t.Sub(rf.leaderTimestamp).Milliseconds() < int64(interval) {
+  if rf.state == Leader || t.Sub(rf.leaderTimestamp).Milliseconds() < int64(electionInterval) {
     rf.mu.Unlock()
-    time.Sleep(time.Duration(150 + r.Intn(150)) * time.Millisecond)
-    return
+    return restart
   }
   condMu := sync.Mutex{}
   cond := sync.NewCond(&condMu)
-  condMu.Lock()
-  for finished := false; !finished ; {
-    condMu.Unlock()
-    // setting up election timer
-    go func() {
-      electionTime := 150 + r.Intn(150)
-      time.Sleep(time.Duration(electionTime) * time.Millisecond)
+  // setting up election timer
+  go func() {
+    time.Sleep(time.Duration(electionTime) * time.Millisecond)
+    condMu.Lock()
+    defer condMu.Unlock()
+    restart = true
+    cond.Broadcast()
+  }()
+
+  count := 1
+  rf.state = Candidate
+  rf.term += 1
+  rf.votedFor = rf.me
+  rf.leaderId = -1
+  curTerm := rf.term
+  lastLogIndex := len(rf.log)-1
+  lastLogTerm := rf.log[lastLogIndex].Term
+
+  rf.persist()
+
+  rf.mu.Unlock()
+
+  for server, _ := range rf.peers{
+    if server == rf.me {
+      continue
+    }
+    go func(term, me, server, lastLogIndex, lastLogTerm int) {
+      reply := rf.CallRequestVote(term, me, server, lastLogIndex, lastLogTerm)
       condMu.Lock()
       defer condMu.Unlock()
-      finished = true
-      cond.Broadcast()
-    }()
-
-    count := 1
-    rf.state = Candidate
-    rf.term += 1
-    rf.votedFor = rf.me
-    rf.leaderId = -1
-    curTerm := rf.term
-    lastLogIndex := len(rf.log)-1
-    lastLogTerm := rf.log[lastLogIndex].Term
-
-    rf.persist()
-
-    rf.mu.Unlock()
-
-    for server, _ := range rf.peers{
-      if server == rf.me {
-	continue
+      if reply != nil && reply.VoteGranted {
+	count += 1
+	cond.Broadcast()
       }
-      go func(term, me, server, lastLogIndex, lastLogTerm int) {
-	reply := rf.CallRequestVote(term, me, server, lastLogIndex, lastLogTerm)
-	condMu.Lock()
-	defer condMu.Unlock()
-	if reply != nil && reply.VoteGranted {
-	  count += 1
-	  cond.Broadcast()
-	}
-      }(curTerm, rf.me, server, lastLogIndex, lastLogTerm)
-    }
-
-    condMu.Lock()
-    for count < (len(rf.peers)/2)+1 && !finished {
-      cond.Wait()
-    }
-
-    rf.mu.Lock()
-    if curTerm < rf.term || rf.state != Candidate {
-      finished = true
-      DPrintf("%d lose the election since the term from %d to %d or we are no longer a Candidate", rf.me, curTerm, rf.term)
-      rf.mu.Unlock()
-    } else if count >= (len(rf.peers)/2)+1 {
-      finished = true
-      rf.state = Leader
-      rf.leaderId = rf.me
-      //rf.leaderTimestamp = time.Now()
-      //DPrintf("%d is leader now in term %d", rf.me, rf.term)
-      rf.initializeIndex()
-      rf.mu.Unlock()
-      rf.doHeartbeat()
-      DPrintf("---%d sending heartbeat upon being leader---", rf.me)
-    } else {
-      rf.mu.Unlock()
-      DPrintf("term %d election timeout", rf.term)
-    }
+    }(curTerm, rf.me, server, lastLogIndex, lastLogTerm)
   }
+
+  condMu.Lock()
+  for ;count < (len(rf.peers)/2)+1 && !restart; {
+    cond.Wait()
+  }
+
+  rf.mu.Lock()
+  defer rf.mu.Unlock()
+  if curTerm < rf.term || rf.state != Candidate {
+    DPrintf("%d lose the election since the term from %d to %d or we are no longer a Candidate", rf.me, curTerm, rf.term)
+  } else if count >= (len(rf.peers)/2)+1 {
+    rf.state = Leader
+    rf.leaderId = rf.me
+    rf.initializeIndex()
+    rf.doHeartbeat()
+    DPrintf("---%d sending heartbeat upon being leader---", rf.me)
+  } else {
+    DPrintf("term %d election timeout", rf.term)
+  }
+  return restart
 }
 
 func (rf *Raft) initializeIndex() {
@@ -731,7 +719,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//election
 	go func() {
 	  for rf.killed() == false{
-	    rf.attemptElection()
+	    r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	    electionTimeout := 100 + r.Intn(200)
+	    electionInterval := 300
+	    electionTime := 100 + r.Intn(200)
+	    restart := rf.attemptElection(electionInterval, electionTime)
+	    if !restart {
+	      time.Sleep(time.Duration(electionTimeout) * time.Millisecond)
+	    }
 	  }
 	}()
 	//CommitChecker
