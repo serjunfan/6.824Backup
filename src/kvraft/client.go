@@ -3,11 +3,18 @@ package kvraft
 import "../labrpc"
 import "crypto/rand"
 import "math/big"
+import "time"
+//import "debug"
+//import "sync"
 
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	leaderId int
+	clientId int
+	commandId int
+	//mu sync.Mutex
 }
 
 func nrand() int64 {
@@ -21,6 +28,10 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.leaderId = 0
+	// how to obtain unique clientId?
+	ck.commandId = 0
+	ck.clientId = int(nrand())
 	return ck
 }
 
@@ -37,9 +48,26 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-
 	// You will have to modify this function.
-	return ""
+	ck.commandId++
+	for {
+	  //ck.mu.Lock()
+	  args := GetArgs{}
+	  reply := GetReply{}
+	  args.Key = key
+	  args.ClientId = ck.clientId
+	  args.CommandId = ck.commandId
+	  //ck.mu.Unlock()
+
+	  Debug(dClient, "%d sends Get request to %d with key %v", ck.clientId, ck.leaderId, key)
+	  ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply)
+
+	  if ok && reply.Err == "" {
+	    return reply.Value
+	  }
+	  ck.leaderId = int((ck.leaderId+1)%len(ck.servers))
+	  time.Sleep(10 * time.Millisecond)
+	}
 }
 
 //
