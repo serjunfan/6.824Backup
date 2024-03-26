@@ -22,23 +22,25 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 */
 
-
+/*
 type OpType string
 const (
-  GetOp OpType = "GetOp"
-  PutOp OpType = "PutOp"
-  AppendOp OpType = "AppendOp"
+  Get OpType = "Get"
+  Put OpType = "Put"
+  Append OpType = "Append"
 )
+*/
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Type OpType
+	Type string
 	Key string
 	Value string
 	CommandId int
 	ClientId int
+	LeaderId int
 }
 
 type Result struct {
@@ -74,15 +76,16 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 	kv.mu.Unlock()
 	command := Op{
-	  Type: GetOp,
+	  Type: "Get",
 	  Key: args.Key,
 	  CommandId: args.CommandId,
 	  ClientId: args.ClientId,
+	  LeaderId: kv.me,
 	}
 	_, _, isLeader := kv.rf.Start(command)
 	if !isLeader {
 	 reply.Err = "NotLeader"
-	 Debug(dServer, "%d replies with notLeader",kv.me)
+	 //Debug(dServer, "%d replies with notLeader",kv.me)
 	 return
         }
 	// is possible for applier to see no chan in map?
@@ -98,6 +101,38 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	Debug(dServer, "%d received %s from %d with key %s and value %s", kv.me, args.Op, args.ClientId, args.Key, args.Value)
+
+	kv.mu.Lock()
+	if kv.lastRequest[args.ClientId].CommandId == args.CommandId {
+	  reply.Err = ""
+	  kv.mu.Unlock()
+	  return
+	}
+	kv.mu.Unlock()
+	command := Op{
+	  Type: args.Op,
+	  Key: args.Key,
+	  Value: args.Value,
+	  CommandId: args.CommandId,
+	  ClientId: args.ClientId,
+	  LeaderId: kv.me,
+	}
+	_, _, isLeader := kv.rf.Start(command)
+	if !isLeader {
+	 reply.Err = "NotLeader"
+	 //Debug(dServer, "%d replies with notLeader",kv.me)
+	 return
+        }
+	// is possible for applier to see no chan in map?
+	ch := make(chan Result)
+	kv.applyChans[args.ClientId] = ch
+	select {
+	case <-kv.applyChans[args.ClientId]:
+	  reply.Err = ""
+	}
+	Debug(dServer, "%d reply.Err = %v", kv.me, reply.Err)
+
 }
 
 //
@@ -155,6 +190,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyChans = make(map[int] chan Result)
 	kv.kvMap = make(map[string] string)
 	kv.lastRequest = make(map[int] Result)
+
 	go kv.applier()
 	return kv
 }
@@ -170,36 +206,37 @@ func (kv *KVServer) applier () {
       }
       kv.mu.Lock()
       if kv.lastRequest[command.ClientId].CommandId == command.CommandId {
-	Debug(dServer, "%d apply command %v has already been applied", kv.me, command)
-	kv.mu.Unlock()
+	Debug(dServer, "%d apply command has already been applied", kv.me)
       } else {
 	res := Result{}
 	res.CommandId = command.CommandId
 	switch command.Type {
-	case GetOp:
-	  Debug(dServer, "%d applying Get command %v to stateMachine of %d, value of this key is %s", kv.me, command, kv.me, kv.kvMap[command.Key])
+	case "Get":
+	  Debug(dServer, "%d Get with Key %s is %s", kv.me, command.Key, kv.kvMap[command.Key])
 	  res.Value = kv.kvMap[command.Key]
 	  kv.lastRequest[command.ClientId] = res
-	case PutOp:
-	  Debug(dServer, "%d applying Put command %v to stateMachine", kv.me, command)
-	  Debug(dServer, "%d Before put is %v", kv.me, kv.kvMap[command.Key])
+	case "Put":
+	  Debug(dServer, "%d applying Put with key %s value %s to stateMachine", kv.me, command.Key, command.Value)
+	  //Debug(dServer, "%d Before put is %v", kv.me, kv.kvMap[command.Key])
 	  res.Value = kv.kvMap[command.Key]
 	  kv.kvMap[command.Key] = command.Value
-	  Debug(dServer, "%d after is %v", kv.me, kv.kvMap[command.Key])
+	  Debug(dServer, "%d after is %s", kv.me, kv.kvMap[command.Key])
 	  res.Value = ""
-	case AppendOp:
-	  Debug(dServer, "%d applying Append command %v to stateMachine",kv.me, command)
-	  Debug(dServer, "%d before append is %v", kv.me, kv.kvMap[command.Key])
+	case "Append":
+	  Debug(dServer, "%d applying Append with Key %s value %s to stateMachine",kv.me, command.Key, command.Value)
+	  Debug(dServer, "%d before append is %s", kv.me, kv.kvMap[command.Key])
 	  var sb strings.Builder
 	  sb.WriteString(kv.kvMap[command.Key])
 	  sb.WriteString(command.Value)
 	  kv.kvMap[command.Key] = sb.String()
-	  Debug(dServer, "%d after is %v", kv.me, kv.kvMap[command.Key])
+	  Debug(dServer, "%d after is %s", kv.me, kv.kvMap[command.Key])
 	  res.Value = ""
 	}
-	kv.applyChans[command.ClientId] <- res
-	kv.mu.Unlock()
+	if command.LeaderId == kv.me {
+	  kv.applyChans[command.ClientId] <- res
+	}
       }
+      kv.mu.Unlock()
     }
   }
 }

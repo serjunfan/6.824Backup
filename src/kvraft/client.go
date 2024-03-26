@@ -59,11 +59,14 @@ func (ck *Clerk) Get(key string) string {
 	  args.CommandId = ck.commandId
 	  //ck.mu.Unlock()
 
-	  Debug(dClient, "%d sends Get request to %d with key %v", ck.clientId, ck.leaderId, key)
+	  Debug(dClient, "%d sends Get request to %d with key %s", ck.clientId, ck.leaderId, key)
 	  ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply)
 
 	  if ok && reply.Err == "" {
 	    return reply.Value
+	  }
+	  if ok {
+	    Debug(dClient, "%d received Err %s", ck.clientId, reply.Err)
 	  }
 	  ck.leaderId = int((ck.leaderId+1)%len(ck.servers))
 	  time.Sleep(10 * time.Millisecond)
@@ -82,6 +85,31 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+	ck.commandId++
+	for {
+	  //ck.mu.Lock()
+	  args := PutAppendArgs{}
+	  reply := PutAppendReply{}
+	  args.Key = key
+	  args.Value = value
+	  args.ClientId = ck.clientId
+	  args.CommandId = ck.commandId
+	  args.Op = op
+	  //ck.mu.Unlock()
+
+	  Debug(dClient, "%d sends %s request to %d with key %s and value %s", ck.clientId, op, ck.leaderId, key, value)
+	  ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
+
+	  if ok && reply.Err == "" {
+	    Debug(dClient, "%d PutAppend request success", ck.clientId)
+	    return
+	  }
+	  if ok {
+	    Debug(dClient, "%d received Err %s", ck.clientId, reply.Err)
+	  }
+	  ck.leaderId = int((ck.leaderId+1)%len(ck.servers))
+	  time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
