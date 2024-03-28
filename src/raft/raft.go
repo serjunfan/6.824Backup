@@ -245,12 +245,15 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
       rf.mu.Unlock()
       return
     }
+    missingLogs := args.Entries[offset:]
 
     rf.log = rf.log[:args.PrevLogIndex+offset+1]
+    rf.log = append(rf.log, missingLogs...)
+    /*
     for ; offset < len(args.Entries); offset++ {
       rf.log = append(rf.log, args.Entries[offset])
     }
-
+    */
     rf.persist()
 
     DPrintf("%d successfully append new log, last log index now = %d", rf.me, len(rf.log)-1)
@@ -298,7 +301,11 @@ func (rf *Raft) CallAppendEntries(server int) {
   DPrintf("%d sending appendRPC to %d in term %d, it's nextIndex = %d", rf.leaderId, server, rf.term, rf.nextIndex[server])
   rf.applyCondMu.Unlock()
   rf.mu.Unlock()
-  rf.sendAppendEntries(server, &args, &reply)
+  ok := rf.sendAppendEntries(server, &args, &reply)
+  if !ok {
+    DPrintf("leader %d sendAppendRPC to %d failed, directly return!", rf.me, server)
+    return
+  }
 
   rf.mu.Lock()
   //advise form student's guide to RAFT: Term confusion
@@ -311,13 +318,14 @@ func (rf *Raft) CallAppendEntries(server int) {
 
   //if term change when received reply, step down
   if reply.Term > rf.term {
-    DPrintf("%d AppendRPC received old reply from %d with term %d conflicting with curTerm %d, step down to follower", rf.me, server, reply.Term, rf.term)
+    DPrintf("%d AppendRPC received reply from %d with term %d conflicting with curTerm %d, step down to follower", rf.me, server, reply.Term, rf.term)
     rf.state = Follower
     rf.leaderId = -1
     rf.votedFor = -1
     rf.mu.Unlock()
     return
   }
+  DPrintf("Leader %d in term %d receive from %d with XTerm %d Xlen %d and success is %t", rf.me, args.Term, server, reply.Xterm, reply.Xlen, reply.Success)
 
   if reply.Success {
     DPrintf("Leader %d in term %d receive Success from %d in term %d", rf.me, args.Term, server, reply.Term)
