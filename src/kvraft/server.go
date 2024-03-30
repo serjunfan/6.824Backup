@@ -73,7 +73,7 @@ func (kv *KVServer) getChan(logIndex int) chan Result{
   kv.mu.Lock()
   defer kv.mu.Unlock()
 
-  ch := make(chan Result, 1)
+  ch := make(chan Result)
   kv.applyChans[logIndex] = ch
   return ch
 }

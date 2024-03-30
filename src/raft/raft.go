@@ -81,11 +81,18 @@ type Raft struct {
 	applyCondMu sync.Mutex
 	applyCond *sync.Cond
 	applyCh  chan ApplyMsg
+	//lastSnapshotIndex int //last index included in snapshot
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
 }
+
+/*
+func (rf *Raft) relativeLogIndex(absoluteLogIndex int) int {
+  return absoluteLogIndex - rf.lastSnapshotIndex
+}
+*/
 
 // return currentTerm and whether this server
 // believes it is the leader.
@@ -645,6 +652,19 @@ func (rf *Raft) initializeIndex() {
     rf.nextIndex[i] = len(rf.log)
   }
 }
+
+/*
+//let the log[0] be the lastPrevlog
+func (rf *Raft) discardLog(index int) {
+  newLog := make([]LogEntry, 0)
+  for _, l := range rf.log[index-1:] {
+    newLog = append(newLog, l)
+  }
+  rf.log = newLog
+  rf.lastSnapshotIndex = index
+}
+*/
+
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -685,6 +705,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCondMu = sync.Mutex{}
 	rf.applyCond = sync.NewCond(&rf.applyCondMu)
 	rf.applyCh = applyCh
+	//rf.lastSnapshotIndex = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -769,7 +790,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	    time.Sleep(300 * time.Millisecond)
 	  }
 	}()
-
+	/*
+	go func() {
+	  for rf.killed() == false {
+	    rf.mu.Lock()
+	    if len(rf.log) > 100 {
+	      rf.discardLog(len(rf.log))
+	      DPrintf("%d discarding it's log", rf.me)
+	    }
+	    rf.mu.Unlock()
+	    time.Sleep(5 * time.Second)
+	  }
+	}()
+	*/
 
 	return rf
 }
